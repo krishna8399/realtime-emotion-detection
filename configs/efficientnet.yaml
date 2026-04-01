@@ -1,0 +1,35 @@
+# EfficientNet-B0 Fine-tuning Configuration
+model:
+  name: "efficientnet_b0"
+  num_classes: 7
+  pretrained: true
+  freeze_backbone_epochs: 3  # freeze backbone for first N epochs
+
+data:
+  dataset: "fer2013"
+  data_dir: "data/fer2013"
+  image_size: 224  # EfficientNet expects 224x224
+  batch_size: 32
+  num_workers: 4
+  augmentation:
+    horizontal_flip: true
+    rotation_limit: 15
+    brightness_limit: 0.2
+    contrast_limit: 0.2
+    random_resized_crop: true
+
+training:
+  epochs: 20
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  early_stopping:
+    patience: 5
+    min_delta: 0.001
+  label_smoothing: 0.1
+
+wandb:
+  project: "emotion-detection"
+  name: "efficientnet-b0-finetune"
+  tags: ["efficientnet", "transfer-learning", "fer2013"]

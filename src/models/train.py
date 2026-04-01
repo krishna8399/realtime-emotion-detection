@@ -1,0 +1,263 @@
+"""
+Training loop with Weights & Biases experiment tracking.
+
+Usage:
+    python src/models/train.py --config configs/baseline_cnn.yaml
+    python src/models/train.py --config configs/efficientnet.yaml
+"""
+
+import argparse
+import os
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+import yaml
+from torch.optim import Adam, AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
+
+import wandb
+
+# Add project root to path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from src.data.dataset import create_dataloaders, NUM_CLASSES, EMOTION_LABELS
+from src.models.baseline_cnn import BaselineCNN
+from src.models.efficientnet import EmotionEfficientNet
+
+
+def load_config(config_path: str) -> dict:
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def create_model(config: dict) -> nn.Module:
+    model_name = config["model"]["name"]
+    num_classes = config["model"].get("num_classes", NUM_CLASSES)
+
+    if model_name == "baseline_cnn":
+        return BaselineCNN(num_classes=num_classes)
+    elif model_name == "efficientnet_b0":
+        return EmotionEfficientNet(
+            num_classes=num_classes,
+            pretrained=config["model"].get("pretrained", True),
+        )
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+
+def train_one_epoch(
+    model: nn.Module,
+    dataloader,
+    criterion: nn.Module,
+    optimizer,
+    device: torch.device,
+) -> dict:
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    pbar = tqdm(dataloader, desc="Training", leave=False)
+    for images, labels in pbar:
+        images, labels = images.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * images.size(0)
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+        correct += predicted.eq(labels).sum().item()
+
+        pbar.set_postfix({
+            "loss": f"{loss.item():.4f}",
+            "acc": f"{100. * correct / total:.1f}%",
+        })
+
+    return {
+        "train_loss": running_loss / total,
+        "train_acc": 100.0 * correct / total,
+    }
+
+
+@torch.no_grad()
+def validate(
+    model: nn.Module,
+    dataloader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> dict:
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    all_preds = []
+    all_labels = []
+
+    for images, labels in tqdm(dataloader, desc="Validating", leave=False):
+        images, labels = images.to(device), labels.to(device)
+
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+
+        running_loss += loss.item() * images.size(0)
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+        correct += predicted.eq(labels).sum().item()
+
+        all_preds.extend(predicted.cpu().numpy())
+        all_labels.extend(labels.cpu().numpy())
+
+    return {
+        "val_loss": running_loss / total,
+        "val_acc": 100.0 * correct / total,
+        "predictions": all_preds,
+        "labels": all_labels,
+    }
+
+
+def train(config_path: str):
+    config = load_config(config_path)
+
+    # Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🖥️  Using device: {device}")
+
+    # Init W&B
+    wandb.init(
+        project=config["wandb"]["project"],
+        name=config["wandb"]["name"],
+        tags=config["wandb"].get("tags", []),
+        config=config,
+    )
+
+    # Data
+    image_size = config["data"]["image_size"]
+    grayscale = True  # FER-2013 is grayscale
+
+    train_loader, val_loader = create_dataloaders(
+        data_dir=config["data"]["data_dir"],
+        image_size=image_size,
+        batch_size=config["data"]["batch_size"],
+        num_workers=config["data"]["num_workers"],
+        grayscale=grayscale,
+    )
+
+    # Model
+    model = create_model(config).to(device)
+    print(f"📦 Model: {config['model']['name']}")
+    print(f"   Params: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Handle backbone freezing for EfficientNet
+    freeze_epochs = config["model"].get("freeze_backbone_epochs", 0)
+    if freeze_epochs > 0 and hasattr(model, "freeze_backbone"):
+        model.freeze_backbone()
+
+    # Loss function
+    label_smoothing = config["training"].get("label_smoothing", 0.0)
+    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    # Optimizer
+    lr = config["training"]["learning_rate"]
+    wd = config["training"]["weight_decay"]
+    opt_name = config["training"]["optimizer"]
+
+    if opt_name == "adamw":
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    else:
+        optimizer = Adam(model.parameters(), lr=lr, weight_decay=wd)
+
+    # Scheduler
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=config["training"]["epochs"],
+        eta_min=lr * 0.01,
+    )
+
+    # Early stopping
+    es_config = config["training"]["early_stopping"]
+    best_val_acc = 0.0
+    patience_counter = 0
+
+    # Checkpoint dir
+    ckpt_dir = Path("models/checkpoints")
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Training loop
+    for epoch in range(1, config["training"]["epochs"] + 1):
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch}/{config['training']['epochs']}")
+        print(f"{'='*60}")
+
+        # Unfreeze backbone after N epochs
+        if epoch == freeze_epochs + 1 and hasattr(model, "unfreeze_backbone"):
+            model.unfreeze_backbone()
+            # Reset optimizer with lower LR for backbone
+            optimizer = AdamW(
+                [
+                    {"params": model.backbone.parameters(), "lr": lr * 0.1},
+                    {"params": model.classifier.parameters(), "lr": lr},
+                ],
+                weight_decay=wd,
+            )
+
+        # Train
+        train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, device)
+
+        # Validate
+        val_metrics = validate(model, val_loader, criterion, device)
+
+        # Step scheduler
+        scheduler.step()
+
+        # Log to W&B
+        wandb.log({
+            "epoch": epoch,
+            "train_loss": train_metrics["train_loss"],
+            "train_acc": train_metrics["train_acc"],
+            "val_loss": val_metrics["val_loss"],
+            "val_acc": val_metrics["val_acc"],
+            "lr": optimizer.param_groups[0]["lr"],
+        })
+
+        print(f"  Train Loss: {train_metrics['train_loss']:.4f} | Train Acc: {train_metrics['train_acc']:.2f}%")
+        print(f"  Val   Loss: {val_metrics['val_loss']:.4f} | Val   Acc: {val_metrics['val_acc']:.2f}%")
+
+        # Save best model
+        if val_metrics["val_acc"] > best_val_acc:
+            best_val_acc = val_metrics["val_acc"]
+            patience_counter = 0
+            save_path = ckpt_dir / f"best_{config['model']['name']}.pt"
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_acc": best_val_acc,
+                "config": config,
+            }, save_path)
+            print(f"  💾 Saved best model (val_acc: {best_val_acc:.2f}%)")
+            wandb.run.summary["best_val_acc"] = best_val_acc
+        else:
+            patience_counter += 1
+            print(f"  ⏳ No improvement ({patience_counter}/{es_config['patience']})")
+
+        # Early stopping
+        if patience_counter >= es_config["patience"]:
+            print(f"\n🛑 Early stopping at epoch {epoch}")
+            break
+
+    print(f"\n✅ Training complete! Best validation accuracy: {best_val_acc:.2f}%")
+    wandb.finish()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
+    args = parser.parse_args()
+    train(args.config)

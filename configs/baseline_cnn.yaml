@@ -1,0 +1,31 @@
+# Baseline CNN Configuration
+model:
+  name: "baseline_cnn"
+  num_classes: 7
+
+data:
+  dataset: "fer2013"
+  data_dir: "data/fer2013"
+  image_size: 48
+  batch_size: 64
+  num_workers: 4
+  augmentation:
+    horizontal_flip: true
+    rotation_limit: 15
+    brightness_limit: 0.2
+    contrast_limit: 0.2
+
+training:
+  epochs: 30
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "cosine"
+  early_stopping:
+    patience: 5
+    min_delta: 0.001
+
+wandb:
+  project: "emotion-detection"
+  name: "baseline-cnn"
+  tags: ["baseline", "cnn", "fer2013"]
