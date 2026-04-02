@@ -14,7 +14,6 @@ import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
-
 import torch
 
 import sys
@@ -24,7 +23,7 @@ from src.app.predictor import EmotionPredictor
 from src.utils.visualize import GradCAM, overlay_heatmap
 from src.data.dataset import EMOTION_LABELS
 
-# ── Emotion metadata ────────────────────────────────────────────────────────
+# ── Emotion metadata ──────────────────────────────────────────────────────────
 EMOTION_EMOJI = {
     "angry":    "😠",
     "disgust":  "🤢",
@@ -35,7 +34,6 @@ EMOTION_EMOJI = {
     "surprise": "😲",
 }
 
-# Color (hex) used in the confidence bar for each emotion
 EMOTION_COLOR = {
     "angry":    "#e74c3c",
     "disgust":  "#27ae60",
@@ -46,7 +44,7 @@ EMOTION_COLOR = {
     "surprise": "#e67e22",
 }
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Emotion Detection",
     page_icon="😊",
@@ -60,9 +58,10 @@ st.markdown(
 )
 
 
-# ── Model loader ─────────────────────────────────────────────────────────────
-@st.cache_resource
-def load_predictor():
+# ── Model loader ──────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
+def load_predictor() -> EmotionPredictor:
+    """Load model checkpoint once and cache for the lifetime of the server."""
     ckpt_dir = Path("models/checkpoints")
     if (ckpt_dir / "best_efficientnet_b0.pt").exists():
         return EmotionPredictor(str(ckpt_dir / "best_efficientnet_b0.pt"))
@@ -74,47 +73,34 @@ def load_predictor():
         st.stop()
 
 
-predictor = load_predictor()
+# Show a spinner only on the very first load — cache_resource means this
+# only runs once per server session, so it won't block subsequent reruns.
+with st.spinner("Loading model and face detector… (first load only)"):
+    predictor = load_predictor()
+
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.header("⚙️ Settings")
 mode = st.sidebar.radio("Input Mode", ["📷 Upload Image", "🎬 Upload Video"])
-confidence_threshold = st.sidebar.slider("Face Detection Confidence", 0.3, 1.0, 0.5, 0.05)
+confidence_threshold = st.sidebar.slider(
+    "Face Detection Confidence", 0.3, 1.0, 0.5, 0.05,
+    help="Minimum confidence score for a face to be detected",
+)
 
-# ── Feature 2: Model Info sidebar ────────────────────────────────────────────
+# ── Model Info sidebar — all values come from the cached predictor, no extra
+#    computation at startup ───────────────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.header("🧠 Model Info")
 
-
-@st.cache_data
-def get_model_stats(_predictor):
-    """Compute model stats once and cache — avoids re-running on every Streamlit rerun."""
-    total_params = sum(p.numel() for p in _predictor.model.parameters())
-
-    # Single warmup pass then one timed pass — enough for a ballpark ms figure
-    dummy = torch.randn(1, 1, _predictor.image_size, _predictor.image_size).to(_predictor.device)
-    with torch.no_grad():
-        _predictor.model(dummy)  # warmup
-        t0 = time.perf_counter()
-        _predictor.model(dummy)
-        avg_ms = (time.perf_counter() - t0) * 1000
-
-    # Read metadata from the predictor's already-loaded config instead of re-loading the file
-    model_name = _predictor.config["model"]["name"]
-    best_val_acc = _predictor.val_acc
-
-    return total_params, avg_ms, model_name, best_val_acc
-
-
-total_params, avg_ms, model_name, best_val_acc = get_model_stats(predictor)
+total_params = sum(p.numel() for p in predictor.model.parameters())
+model_name = predictor.config["model"]["name"]
 
 st.sidebar.markdown(f"""
 | | |
 |---|---|
 | **Model** | `{model_name}` |
-| **Parameters** | {total_params/1e6:.1f}M |
-| **Val Accuracy** | {best_val_acc:.2f}% |
-| **Inference** | {avg_ms:.1f} ms/frame |
+| **Parameters** | {total_params / 1e6:.1f}M |
+| **Val Accuracy** | {predictor.val_acc:.2f}% |
 | **Device** | `{predictor.device}` |
 """)
 
@@ -125,9 +111,9 @@ st.sidebar.markdown(
 )
 
 
-# ── Helper: color-coded confidence bar ───────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def confidence_bar(emotion: str, confidence: float) -> str:
-    """Return an HTML progress bar string colored by emotion, showing confidence as a percentage."""
+    """Return an HTML progress bar string colored by emotion."""
     color = EMOTION_COLOR.get(emotion, "#888")
     pct = int(confidence * 100)
     return (
@@ -139,9 +125,8 @@ def confidence_bar(emotion: str, confidence: float) -> str:
     )
 
 
-# ── Helper: display per-face results ─────────────────────────────────────────
 def display_results(predictions: list, col) -> None:
-    """Render per-face emotion results (label, confidence bar, full breakdown) into a Streamlit column."""
+    """Render per-face emotion results into a Streamlit column."""
     if not predictions:
         col.warning("No faces detected.")
         return
@@ -150,28 +135,20 @@ def display_results(predictions: list, col) -> None:
         emoji = EMOTION_EMOJI.get(pred.emotion, "")
         col.markdown(f"#### {emoji} Face {i + 1}")
         col.markdown(f"**{pred.emotion.upper()}** — {pred.confidence:.1%} confidence")
+        col.markdown(confidence_bar(pred.emotion, pred.confidence), unsafe_allow_html=True)
+        col.markdown("")
 
-        # Color-coded confidence bar for the top emotion
-        col.markdown(
-            confidence_bar(pred.emotion, pred.confidence),
-            unsafe_allow_html=True,
-        )
-        col.markdown("")  # spacer
-
-        # Probability breakdown for all 7 emotions
         col.markdown("**All emotions:**")
         for emo, prob in sorted(pred.all_probs.items(), key=lambda x: -x[1]):
-            bar = confidence_bar(emo, prob)
             col.markdown(
-                f"{EMOTION_EMOJI.get(emo,'')} `{emo:<9}` {bar}",
+                f"{EMOTION_EMOJI.get(emo, '')} `{emo:<9}` {confidence_bar(emo, prob)}",
                 unsafe_allow_html=True,
             )
         col.divider()
 
 
-# ── Feature 3: Download Results helper ───────────────────────────────────────
 def download_button(predictions: list, source_name: str) -> None:
-    """Render a Streamlit download button that exports per-face predictions as a JSON file."""
+    """Render a download button that exports per-face predictions as JSON."""
     if not predictions:
         return
     data = {
@@ -187,62 +164,61 @@ def download_button(predictions: list, source_name: str) -> None:
             for i, p in enumerate(predictions)
         ],
     }
-    json_str = json.dumps(data, indent=2)
     st.download_button(
         label="⬇️ Download Results (JSON)",
-        data=json_str,
+        data=json.dumps(data, indent=2),
         file_name="emotion_predictions.json",
         mime="application/json",
     )
 
 
-# ── Feature: Grad-CAM explainability ─────────────────────────────────────────
-@st.cache_resource
+def resize_for_display(frame: np.ndarray, max_width: int = 800) -> np.ndarray:
+    """Downscale a frame for display without modifying the original."""
+    h, w = frame.shape[:2]
+    if w <= max_width:
+        return frame
+    scale = max_width / w
+    return cv2.resize(frame, (max_width, int(h * scale)), interpolation=cv2.INTER_AREA)
+
+
+# ── Grad-CAM explainability ───────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
 def get_gradcam(_predictor: EmotionPredictor) -> GradCAM:
-    """Build a GradCAM instance attached to the correct target layer.
-    Cached so hooks are only registered once."""
+    """Build GradCAM instance once — cached so hooks are only registered once."""
     model = _predictor.model
-    model_name = _predictor.config["model"]["name"]
-    if model_name == "efficientnet_b0":
-        target_layer = model.backbone.conv_head  # last conv before global pool
+    if _predictor.config["model"]["name"] == "efficientnet_b0":
+        target_layer = model.backbone.conv_head
     else:
-        target_layer = model.features[-2]        # last BatchNorm in baseline CNN
+        target_layer = model.features[-2]
     return GradCAM(model, target_layer)
 
 
 def render_explainability(face_crop: np.ndarray, all_probs: dict, grad_cam: GradCAM) -> None:
     """
-    Render Grad-CAM heatmap overlays for the top 3 predicted emotions in a 3-column layout.
+    Show Grad-CAM heatmap overlays for the top 3 predicted emotions in 3 columns.
 
-    Each column shows the heatmap blended onto the face crop for one emotion class,
+    Each column shows the heatmap blended onto the face crop for one emotion,
     labelled with the emotion name and its predicted probability.
     """
-    # Preprocess the face crop into a model tensor (same pipeline as predictor)
     gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY) if len(face_crop.shape) == 3 else face_crop
     resized = cv2.resize(gray, (predictor.image_size, predictor.image_size))
     normalized = (resized.astype(np.float32) / 255.0 - 0.5) / 0.5
     input_tensor = torch.from_numpy(normalized).unsqueeze(0).unsqueeze(0).to(predictor.device)
     input_tensor.requires_grad_(True)
 
-    # Get top 3 class indices sorted by probability
     top3 = sorted(all_probs.items(), key=lambda x: -x[1])[:3]
-
-    # Map emotion name → index
     label_to_idx = {v: k for k, v in EMOTION_LABELS.items()}
 
     cols = st.columns(3)
     for col, (emotion, prob) in zip(cols, top3):
         class_idx = label_to_idx[emotion]
         heatmap, _ = grad_cam.generate(input_tensor, target_class=class_idx)
-
-        # Overlay heatmap on the original face crop
         overlay = overlay_heatmap(face_crop, heatmap, alpha=0.45)
         overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
 
-        emoji = EMOTION_EMOJI.get(emotion, "")
         col.image(overlay_rgb, use_container_width=True)
         col.markdown(
-            f"**{emoji} {emotion.upper()}** — {prob:.1%}  \n"
+            f"**{EMOTION_EMOJI.get(emotion, '')} {emotion.upper()}** — {prob:.1%}  \n"
             f"{confidence_bar(emotion, prob)}",
             unsafe_allow_html=True,
         )
@@ -261,19 +237,26 @@ if mode == "📷 Upload Image":
         file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
         frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-        t0 = time.perf_counter()
-        predictions = predictor.predict_frame(frame)
-        elapsed_ms = (time.perf_counter() - t0) * 1000
+        with st.spinner("Detecting faces…"):
+            # Apply current slider confidence threshold
+            predictor.face_detector.detector = \
+                predictor.face_detector.mp_face_detection.FaceDetection(
+                    model_selection=0,
+                    min_detection_confidence=confidence_threshold,
+                )
+            t0 = time.perf_counter()
+            predictions = predictor.predict_frame(frame)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
 
         annotated = predictor.annotate_frame(frame, predictions)
+        display_frame = resize_for_display(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
 
-        # ── Tabs: Results | Explainability ───────────────────────────────
         tab_results, tab_explain = st.tabs(["🎯 Results", "🔬 Explainability"])
 
         with tab_results:
             col1, col2 = st.columns([2, 1])
             col1.image(
-                cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                display_frame,
                 caption=f"Detected {len(predictions)} face(s) — {elapsed_ms:.0f} ms",
                 use_container_width=True,
             )
@@ -288,12 +271,10 @@ if mode == "📷 Upload Image":
                 grad_cam = get_gradcam(predictor)
                 for i, pred in enumerate(predictions):
                     st.markdown(
-                        f"#### {EMOTION_EMOJI.get(pred.emotion, '')} Face {i + 1} "
-                        f"— Top 3 Grad-CAM Heatmaps"
+                        f"#### {EMOTION_EMOJI.get(pred.emotion, '')} Face {i + 1}"
+                        f" — Top 3 Grad-CAM Heatmaps"
                     )
-                    st.markdown(
-                        "Red/warm regions = areas the model focused on most for each emotion."
-                    )
+                    st.caption("Red/warm regions = areas the model focused on most for each emotion.")
                     render_explainability(pred.face_crop_bgr, pred.all_probs, grad_cam)
                     if i < len(predictions) - 1:
                         st.divider()
@@ -318,17 +299,23 @@ elif mode == "🎬 Upload Video":
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         stframe = st.empty()
-        progress_bar = st.progress(0)
+        progress_bar = st.progress(0, text="Processing video…")
+        status_text = st.empty()
 
         frame_count = 0
         processed_count = 0
-        process_every_n = 3
+        predict_every_n = 3     # run the model every 3rd frame
+        display_every_n = 5     # update the Streamlit image every 5th frame (reduce re-renders)
 
-        # Feature 1: Emotion Timeline data
-        # Store (timestamp_sec, emotion, confidence) for every processed frame
         timeline_records = []
-        # Last seen predictions (to annotate skipped frames too)
         last_predictions = []
+
+        # Apply current slider confidence threshold
+        predictor.face_detector.detector = \
+            predictor.face_detector.mp_face_detection.FaceDetection(
+                model_selection=0,
+                min_detection_confidence=confidence_threshold,
+            )
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -336,13 +323,16 @@ elif mode == "🎬 Upload Video":
                 break
 
             frame_count += 1
-            progress_bar.progress(min(frame_count / max(total_frames, 1), 1.0))
+            progress_bar.progress(
+                min(frame_count / max(total_frames, 1), 1.0),
+                text=f"Processing frame {frame_count}/{total_frames}…",
+            )
 
-            if frame_count % process_every_n == 0:
+            # Run prediction every N frames
+            if frame_count % predict_every_n == 0:
                 last_predictions = predictor.predict_frame(frame)
                 processed_count += 1
 
-                # Record emotion at this timestamp for the timeline
                 timestamp = frame_count / fps
                 for pred in last_predictions:
                     timeline_records.append({
@@ -351,25 +341,30 @@ elif mode == "🎬 Upload Video":
                         "confidence": round(pred.confidence, 3),
                     })
 
-            annotated = predictor.annotate_frame(frame, last_predictions)
-            stframe.image(
-                cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                use_container_width=True,
-            )
+            # Only push a new image to the browser every N frames — each
+            # stframe.image() call triggers a full Streamlit re-render, so
+            # calling it on every frame is the main cause of slow video playback.
+            if frame_count % display_every_n == 0:
+                annotated = predictor.annotate_frame(frame, last_predictions)
+                display_frame = resize_for_display(
+                    cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), max_width=800
+                )
+                stframe.image(display_frame, use_container_width=True)
 
         cap.release()
         progress_bar.empty()
-        st.success(f"✅ Processed {processed_count} frames from {frame_count} total")
+        status_text.empty()
+        st.success(
+            f"✅ Processed {processed_count} frames "
+            f"({total_frames} total, {fps:.0f} fps source)"
+        )
 
-        # ── Feature 1: Emotion Timeline chart ────────────────────────────────
+        # ── Emotion Timeline ──────────────────────────────────────────────────
         if timeline_records:
             st.markdown("### 📈 Emotion Timeline")
-            st.markdown("How emotions changed throughout the video (confidence over time):")
+            st.caption("Emotion confidence over time (averaged per timestamp).")
 
             df = pd.DataFrame(timeline_records)
-
-            # Pivot: rows = timestamps, columns = emotions, values = confidence
-            # Fill missing emotions with 0 so the chart shows all 7 lines
             timeline_pivot = (
                 df.pivot_table(
                     index="time_sec",
@@ -380,20 +375,17 @@ elif mode == "🎬 Upload Video":
                 .reindex(columns=list(EMOTION_EMOJI.keys()), fill_value=0)
                 .fillna(0)
             )
-
-            # Rename columns to include emoji for the legend
             timeline_pivot.columns = [
                 f"{EMOTION_EMOJI.get(c, '')} {c}" for c in timeline_pivot.columns
             ]
-
             st.line_chart(timeline_pivot, height=300)
 
-            # Summary: most common emotion in the video
             dominant = df.groupby("emotion")["confidence"].mean().idxmax()
-            emoji = EMOTION_EMOJI.get(dominant, "")
-            st.info(f"**Dominant emotion in video:** {emoji} {dominant.upper()}")
+            st.info(
+                f"**Dominant emotion in video:** "
+                f"{EMOTION_EMOJI.get(dominant, '')} {dominant.upper()}"
+            )
 
-            # ── Feature 3: Download full timeline results ─────────────────
             download_data = {
                 "source": uploaded.name,
                 "total_frames": frame_count,
