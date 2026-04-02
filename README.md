@@ -6,6 +6,8 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![Demo](assets/demo.gif)
+
 A production-ready emotion detection pipeline that detects faces using MediaPipe and classifies emotions (angry, disgust, fear, happy, neutral, sad, surprise) using a fine-tuned EfficientNet-B0. Deployed as an interactive Streamlit web app with per-face confidence bars, Grad-CAM explainability, and emotion timeline charts for video.
 
 ## Architecture
