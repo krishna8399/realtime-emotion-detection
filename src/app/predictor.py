@@ -30,6 +30,7 @@ class EmotionPrediction:
     emotion: str                     # predicted emotion label (e.g. "happy")
     confidence: float                # probability of the predicted emotion (0.0–1.0)
     all_probs: dict                  # {emotion_name: probability} for all 7 classes
+    face_crop_bgr: np.ndarray = None  # raw BGR face crop — used by Grad-CAM in the app
 
 
 class EmotionPredictor:
@@ -132,6 +133,7 @@ class EmotionPredictor:
                 emotion=EMOTION_LABELS[top_idx],  # human-readable label
                 confidence=top_prob,
                 all_probs=all_probs,
+                face_crop_bgr=face.face_crop,  # store crop for Grad-CAM explainability
             ))
 
         return predictions

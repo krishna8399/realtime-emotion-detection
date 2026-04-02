@@ -15,10 +15,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import torch
+import torch.nn.functional as F
+
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.app.predictor import EmotionPredictor
+from src.utils.visualize import GradCAM, overlay_heatmap
+from src.data.dataset import EMOTION_LABELS
 
 # ── Emotion metadata ────────────────────────────────────────────────────────
 EMOTION_EMOJI = {
@@ -96,14 +101,13 @@ with torch.no_grad():
 avg_ms = sum(timings[2:]) / len(timings[2:])  # skip first 2 (warmup)
 
 # Detect which checkpoint is loaded from the model's config
-import torch as _torch
 ckpt_dir = Path("models/checkpoints")
 ckpt_path = (
     ckpt_dir / "best_efficientnet_b0.pt"
     if (ckpt_dir / "best_efficientnet_b0.pt").exists()
     else ckpt_dir / "best_baseline_cnn.pt"
 )
-ckpt = _torch.load(str(ckpt_path), map_location="cpu")
+ckpt = torch.load(str(ckpt_path), map_location="cpu")
 model_name = ckpt["config"]["model"]["name"]
 best_val_acc = ckpt.get("val_acc", "N/A")
 
@@ -112,7 +116,7 @@ st.sidebar.markdown(f"""
 |---|---|
 | **Model** | `{model_name}` |
 | **Parameters** | {total_params/1e6:.1f}M |
-| **Val Accuracy** | {best_val_acc:.2%} |
+| **Val Accuracy** | {best_val_acc:.2f}% |
 | **Inference** | {avg_ms:.1f} ms/frame |
 | **Device** | `{predictor.device}` |
 """)
@@ -194,6 +198,53 @@ def download_button(predictions, source_name: str):
     )
 
 
+# ── Feature: Grad-CAM explainability ─────────────────────────────────────────
+@st.cache_resource
+def get_gradcam(_predictor: EmotionPredictor) -> GradCAM:
+    """Build a GradCAM instance attached to the correct target layer.
+    Cached so hooks are only registered once."""
+    model = _predictor.model
+    model_name = ckpt["config"]["model"]["name"]
+    if model_name == "efficientnet_b0":
+        target_layer = model.backbone.conv_head  # last conv before global pool
+    else:
+        target_layer = model.features[-2]        # last BatchNorm in baseline CNN
+    return GradCAM(model, target_layer)
+
+
+def render_explainability(face_crop: np.ndarray, all_probs: dict, grad_cam: GradCAM):
+    """Show Grad-CAM heatmap overlays for the top 3 predicted emotions."""
+    # Preprocess the face crop into a model tensor (same pipeline as predictor)
+    gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY) if len(face_crop.shape) == 3 else face_crop
+    resized = cv2.resize(gray, (predictor.image_size, predictor.image_size))
+    normalized = (resized.astype(np.float32) / 255.0 - 0.5) / 0.5
+    input_tensor = torch.from_numpy(normalized).unsqueeze(0).unsqueeze(0).to(predictor.device)
+    input_tensor.requires_grad_(True)
+
+    # Get top 3 class indices sorted by probability
+    top3 = sorted(all_probs.items(), key=lambda x: -x[1])[:3]
+
+    # Map emotion name → index
+    label_to_idx = {v: k for k, v in EMOTION_LABELS.items()}
+
+    cols = st.columns(3)
+    for col, (emotion, prob) in zip(cols, top3):
+        class_idx = label_to_idx[emotion]
+        heatmap, _ = grad_cam.generate(input_tensor, target_class=class_idx)
+
+        # Overlay heatmap on the original face crop
+        overlay = overlay_heatmap(face_crop, heatmap, alpha=0.45)
+        overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+
+        emoji = EMOTION_EMOJI.get(emotion, "")
+        col.image(overlay_rgb, use_container_width=True)
+        col.markdown(
+            f"**{emoji} {emotion.upper()}** — {prob:.1%}  \n"
+            f"{confidence_bar(emotion, prob)}",
+            unsafe_allow_html=True,
+        )
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # IMAGE MODE
 # ════════════════════════════════════════════════════════════════════════════
@@ -213,17 +264,36 @@ if mode == "📷 Upload Image":
 
         annotated = predictor.annotate_frame(frame, predictions)
 
-        col1, col2 = st.columns([2, 1])
-        col1.image(
-            cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-            caption=f"Detected {len(predictions)} face(s) — {elapsed_ms:.0f} ms",
-            use_container_width=True,
-        )
+        # ── Tabs: Results | Explainability ───────────────────────────────
+        tab_results, tab_explain = st.tabs(["🎯 Results", "🔬 Explainability"])
 
-        with col2:
-            display_results(predictions, col2)
-            # Feature 3: download button
-            download_button(predictions, uploaded.name)
+        with tab_results:
+            col1, col2 = st.columns([2, 1])
+            col1.image(
+                cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                caption=f"Detected {len(predictions)} face(s) — {elapsed_ms:.0f} ms",
+                use_container_width=True,
+            )
+            with col2:
+                display_results(predictions, col2)
+                download_button(predictions, uploaded.name)
+
+        with tab_explain:
+            if not predictions:
+                st.warning("No faces detected — nothing to explain.")
+            else:
+                grad_cam = get_gradcam(predictor)
+                for i, pred in enumerate(predictions):
+                    st.markdown(
+                        f"#### {EMOTION_EMOJI.get(pred.emotion, '')} Face {i + 1} "
+                        f"— Top 3 Grad-CAM Heatmaps"
+                    )
+                    st.markdown(
+                        "Red/warm regions = areas the model focused on most for each emotion."
+                    )
+                    render_explainability(pred.face_crop_bgr, pred.all_probs, grad_cam)
+                    if i < len(predictions) - 1:
+                        st.divider()
 
 
 # ════════════════════════════════════════════════════════════════════════════
