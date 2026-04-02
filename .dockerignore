@@ -1,0 +1,25 @@
+# Exclude large data directories
+data/
+wandb/
+
+# Exclude dev/test artifacts
+*.pyc
+__pycache__/
+.git/
+.gitignore
+.venv/
+venv/
+env/
+
+# Exclude IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Exclude logs and temp
+*.log
+tmp/
+
+# Keep models/checkpoints — the app needs them at runtime
+# (they are gitignored but must be in the Docker image)

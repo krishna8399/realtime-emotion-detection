@@ -9,23 +9,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
+# Copies requirements first so Docker can cache this layer — only re-runs if requirements change
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project
+# Pin mediapipe to a version compatible with Python 3.10 in this container
+# Override the open-ended >=0.10.0 spec with an exact working version
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir "mediapipe==0.10.9"
+
+# Disable Streamlit telemetry prompt
+RUN mkdir -p /root/.streamlit && \
+    echo '[browser]\ngatherUsageStats = false' > /root/.streamlit/config.toml
+
+# Copy project source (data/ and wandb/ are excluded via .dockerignore)
 COPY . .
 
 # Expose Streamlit port
 EXPOSE 8501
 
-# Health check
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# Health check — polls the Streamlit health endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
 # Run Streamlit
 ENTRYPOINT ["streamlit", "run", "src/app/app.py", \
     "--server.port=8501", \
     "--server.address=0.0.0.0", \
-    "--server.headless=true"]
+    "--server.headless=true", \
+    "--browser.gatherUsageStats=false"]
