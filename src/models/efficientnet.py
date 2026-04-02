@@ -2,7 +2,7 @@
 EfficientNet-B0 fine-tuned for emotion classification.
 
 Uses `timm` library for pretrained weights.
-Handles grayscale → 3-channel conversion for pretrained models.
+Handles grayscale ->� 3-channel conversion for pretrained models.
 """
 
 import torch
@@ -51,19 +51,19 @@ class EmotionEfficientNet(nn.Module):
         )
 
     def freeze_backbone(self):
-        """Freeze backbone weights — only train classifier head."""
+        """Freeze backbone weights  only train classifier head."""
         for param in self.backbone.parameters():
             param.requires_grad = False
-        print("🧊 Backbone frozen — only training classifier head")
+        print(" Backbone frozen  only training classifier head")
 
     def unfreeze_backbone(self):
         """Unfreeze all weights for full fine-tuning."""
         for param in self.backbone.parameters():
             param.requires_grad = True
-        print("🔥 Backbone unfrozen — full fine-tuning active")
+        print(" Backbone unfrozen  full fine-tuning active")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Handle grayscale: repeat 1 channel → 3 channels
+        # Handle grayscale: repeat 1 channel � 3 channels
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
 

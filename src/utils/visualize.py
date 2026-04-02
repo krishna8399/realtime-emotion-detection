@@ -2,7 +2,7 @@
 Grad-CAM visualization for emotion classification.
 
 Shows what regions of the face the model focuses on
-when making predictions — great for explainability.
+when making predictions  great for explainability.
 
 Usage:
     python src/utils/visualize.py --checkpoint models/checkpoints/best_efficientnet_b0.pt --image path/to/face.jpg
@@ -189,7 +189,7 @@ def visualize_gradcam(
 
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    print(f"📊 Grad-CAM saved to {save_path}")
+    print(f" Grad-CAM saved to {save_path}")
     plt.close()
 
 

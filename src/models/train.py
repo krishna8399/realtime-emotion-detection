@@ -127,7 +127,7 @@ def train(config_path: str):
 
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🖥️  Using device: {device}")
+    print(f"Using device: {device}")
 
     # Init W&B
     wandb.init(
@@ -151,7 +151,7 @@ def train(config_path: str):
 
     # Model
     model = create_model(config).to(device)
-    print(f"📦 Model: {config['model']['name']}")
+    print(f"Model: {config['model']['name']}")
     print(f"   Params: {sum(p.numel() for p in model.parameters()):,}")
 
     # Handle backbone freezing for EfficientNet
@@ -241,18 +241,18 @@ def train(config_path: str):
                 "val_acc": best_val_acc,
                 "config": config,
             }, save_path)
-            print(f"  💾 Saved best model (val_acc: {best_val_acc:.2f}%)")
+            print(f"Saved best model (val_acc: {best_val_acc:.2f}%)")
             wandb.run.summary["best_val_acc"] = best_val_acc
         else:
             patience_counter += 1
-            print(f"  ⏳ No improvement ({patience_counter}/{es_config['patience']})")
+            print(f"  No improvement ({patience_counter}/{es_config['patience']})")
 
         # Early stopping
         if patience_counter >= es_config["patience"]:
-            print(f"\n🛑 Early stopping at epoch {epoch}")
+            print(f"\nEarly stopping at epoch {epoch}")
             break
 
-    print(f"\n✅ Training complete! Best validation accuracy: {best_val_acc:.2f}%")
+    print(f"\nTraining complete! Best validation accuracy: {best_val_acc:.2f}%")
     wandb.finish()
 
 

@@ -34,7 +34,7 @@ class EmotionPrediction:
 
 class EmotionPredictor:
     """
-    Full pipeline: frame â†’ face detection â†’ emotion classification.
+    Full pipeline: frame † face detection † emotion classification.
     """
 
     def __init__(
@@ -71,7 +71,7 @@ class EmotionPredictor:
         # Face detector
         self.face_detector = FaceDetector(min_confidence=face_confidence)
 
-        print(f"âœ… Loaded {model_name} (val_acc: {checkpoint.get('val_acc', 'N/A')})")
+        print(f" Loaded {model_name} (val_acc: {checkpoint.get('val_acc', 'N/A')})")
         print(f"   Device: {self.device}")
 
     def preprocess_face(self, face_crop: np.ndarray) -> torch.Tensor:

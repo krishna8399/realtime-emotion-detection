@@ -79,7 +79,7 @@ def plot_confusion_matrix(y_true, y_pred, save_path: str = "assets/confusion_mat
     plt.tight_layout()
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    print(f"📊 Confusion matrix saved to {save_path}")
+    print(f" Confusion matrix saved to {save_path}")
     plt.close()
 
 
