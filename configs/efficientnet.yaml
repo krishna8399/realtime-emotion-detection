@@ -10,7 +10,7 @@ data:
   data_dir: "data/fer2013"
   image_size: 224  # EfficientNet expects 224x224
   batch_size: 32
-  num_workers: 4
+  num_workers: 0
   augmentation:
     horizontal_flip: true
     rotation_limit: 15

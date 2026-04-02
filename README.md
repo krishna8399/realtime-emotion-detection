@@ -37,12 +37,26 @@ Video/Webcam Input
 
 ## 📊 Results
 
-| Model | Accuracy | F1-Score | Inference (CPU) | Inference (GPU) |
-|-------|----------|----------|-----------------|-----------------|
-| Baseline CNN | - | - | - | - |
-| EfficientNet-B0 | - | - | - | - |
+| Model | Val Accuracy | Weighted F1 | Params |
+|-------|-------------|-------------|--------|
+| Baseline CNN | 65.12% | - | 1.2M |
+| EfficientNet-B0 | **67.64%** | **0.6753** | 4.7M |
 
-<!-- TODO: Fill in after training -->
+### Per-Class Performance (EfficientNet-B0)
+
+| Emotion | Precision | Recall | F1 |
+|---------|-----------|--------|----|
+| angry | 0.56 | 0.61 | 0.59 |
+| disgust | 0.73 | 0.66 | 0.69 |
+| fear | 0.57 | 0.49 | 0.53 |
+| happy | 0.87 | 0.87 | **0.87** |
+| neutral | 0.60 | 0.64 | 0.62 |
+| sad | 0.56 | 0.55 | 0.55 |
+| surprise | 0.80 | 0.82 | 0.81 |
+
+### Confusion Matrix
+
+![Confusion Matrix](assets/confusion_matrix.png)
 
 ## 🚀 Quick Start
 
