@@ -3,45 +3,61 @@ Streamlit app for real-time emotion detection.
 
 Usage:
     streamlit run src/app/app.py
-
-Features:
-    - Upload image or video for emotion detection
-    - Real-time webcam feed (if available)
-    - Emotion distribution chart
-    - Per-face emotion breakdown
 """
+
+import json
+import time
+import tempfile
+from pathlib import Path
 
 import cv2
 import numpy as np
+import pandas as pd
 import streamlit as st
-import tempfile  # for saving uploaded video to a temp file
-from pathlib import Path
-from PIL import Image
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.app.predictor import EmotionPredictor
 
+# ── Emotion metadata ────────────────────────────────────────────────────────
+EMOTION_EMOJI = {
+    "angry":    "😠",
+    "disgust":  "🤢",
+    "fear":     "😨",
+    "happy":    "😄",
+    "neutral":  "😐",
+    "sad":      "😢",
+    "surprise": "😲",
+}
 
-# Configure the browser tab title, icon, and layout
+# Color (hex) used in the confidence bar for each emotion
+EMOTION_COLOR = {
+    "angry":    "#e74c3c",
+    "disgust":  "#27ae60",
+    "fear":     "#8e44ad",
+    "happy":    "#f1c40f",
+    "neutral":  "#95a5a6",
+    "sad":      "#2980b9",
+    "surprise": "#e67e22",
+}
+
+# ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Emotion Detection",
     page_icon="😊",
-    layout="wide",  # use full browser width
+    layout="wide",
 )
 
 st.title("😊 Real-Time Emotion Detection")
 st.markdown(
-    "Detects faces and classifies emotions using a fine-tuned EfficientNet-B0. "
-    "Upload an image or video to get started."
+    "Detects faces and classifies emotions using a fine-tuned **EfficientNet-B0** "
+    "trained on FER-2013 (68.57% val accuracy). Upload an image or video to get started."
 )
 
-
-@st.cache_resource  # cache the model in memory — only loads once per session
+# ── Model loader ─────────────────────────────────────────────────────────────
+@st.cache_resource
 def load_predictor():
-    """Load model once and cache it."""
-    # Prefer EfficientNet (more accurate) but fall back to baseline CNN if not trained yet
     ckpt_dir = Path("models/checkpoints")
     if (ckpt_dir / "best_efficientnet_b0.pt").exists():
         return EmotionPredictor(str(ckpt_dir / "best_efficientnet_b0.pt"))
@@ -50,44 +66,137 @@ def load_predictor():
     else:
         st.error("❌ No model checkpoint found! Train a model first.")
         st.code("python src/models/train.py --config configs/baseline_cnn.yaml")
-        st.stop()  # halt the app — nothing to do without a model
+        st.stop()
 
 
-# Sidebar controls
-st.sidebar.header("⚙️ Settings")
-mode = st.sidebar.radio("Input Mode", ["📷 Upload Image", "🎬 Upload Video"])
-confidence_threshold = st.sidebar.slider(
-    "Face Detection Confidence", 0.3, 1.0, 0.5, 0.05,  # min, max, default, step
-)
-
-# Load model (cached after first call)
 predictor = load_predictor()
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+st.sidebar.header("⚙️ Settings")
+mode = st.sidebar.radio("Input Mode", ["📷 Upload Image", "🎬 Upload Video"])
+confidence_threshold = st.sidebar.slider("Face Detection Confidence", 0.3, 1.0, 0.5, 0.05)
 
+# ── Feature 2: Model Info sidebar ────────────────────────────────────────────
+st.sidebar.markdown("---")
+st.sidebar.header("🧠 Model Info")
+
+# Count parameters from the loaded model
+total_params = sum(p.numel() for p in predictor.model.parameters())
+trainable_params = sum(p.numel() for p in predictor.model.parameters() if p.requires_grad)
+
+# Measure inference speed: run 10 dummy forward passes and average
+import torch
+dummy = torch.randn(1, 1, predictor.image_size, predictor.image_size).to(predictor.device)
+timings = []
+with torch.no_grad():
+    for _ in range(10):
+        t0 = time.perf_counter()
+        predictor.model(dummy)
+        timings.append((time.perf_counter() - t0) * 1000)
+avg_ms = sum(timings[2:]) / len(timings[2:])  # skip first 2 (warmup)
+
+# Detect which checkpoint is loaded from the model's config
+import torch as _torch
+ckpt_dir = Path("models/checkpoints")
+ckpt_path = (
+    ckpt_dir / "best_efficientnet_b0.pt"
+    if (ckpt_dir / "best_efficientnet_b0.pt").exists()
+    else ckpt_dir / "best_baseline_cnn.pt"
+)
+ckpt = _torch.load(str(ckpt_path), map_location="cpu")
+model_name = ckpt["config"]["model"]["name"]
+best_val_acc = ckpt.get("val_acc", "N/A")
+
+st.sidebar.markdown(f"""
+| | |
+|---|---|
+| **Model** | `{model_name}` |
+| **Parameters** | {total_params/1e6:.1f}M |
+| **Val Accuracy** | {best_val_acc:.2%} |
+| **Inference** | {avg_ms:.1f} ms/frame |
+| **Device** | `{predictor.device}` |
+""")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    "**Built by [Krishna Singh](https://github.com/krishna8399)**\n\n"
+    "MSc AI @ IU Berlin"
+)
+
+
+# ── Helper: color-coded confidence bar ───────────────────────────────────────
+def confidence_bar(emotion: str, confidence: float) -> str:
+    """Render an HTML progress bar colored by emotion."""
+    color = EMOTION_COLOR.get(emotion, "#888")
+    pct = int(confidence * 100)
+    return (
+        f'<div style="background:#eee;border-radius:6px;height:18px;width:100%">'
+        f'<div style="background:{color};width:{pct}%;height:18px;border-radius:6px;'
+        f'display:flex;align-items:center;padding-left:6px">'
+        f'<span style="color:white;font-size:12px;font-weight:bold">{pct}%</span>'
+        f'</div></div>'
+    )
+
+
+# ── Helper: display per-face results ─────────────────────────────────────────
 def display_results(predictions, col):
-    """Display emotion predictions in a column."""
     if not predictions:
-        col.warning("No faces detected in the image.")
+        col.warning("No faces detected.")
         return
 
     for i, pred in enumerate(predictions):
-        col.markdown(f"**Face {i + 1}**")
+        emoji = EMOTION_EMOJI.get(pred.emotion, "")
+        col.markdown(f"#### {emoji} Face {i + 1}")
+        col.markdown(f"**{pred.emotion.upper()}** — {pred.confidence:.1%} confidence")
+
+        # Color-coded confidence bar for the top emotion
         col.markdown(
-            f"Emotion: **{pred.emotion.upper()}** "
-            f"({pred.confidence:.1%} confidence)"
+            confidence_bar(pred.emotion, pred.confidence),
+            unsafe_allow_html=True,
         )
+        col.markdown("")  # spacer
 
-        # Bar chart showing probability for each of the 7 emotions
-        emotions = list(pred.all_probs.keys())
-        probs = list(pred.all_probs.values())
-        chart_data = {
-            "Emotion": emotions,
-            "Probability": probs,
-        }
-        col.bar_chart(chart_data, x="Emotion", y="Probability", height=200)
-        col.divider()  # horizontal separator between faces
+        # Probability breakdown for all 7 emotions
+        col.markdown("**All emotions:**")
+        for emo, prob in sorted(pred.all_probs.items(), key=lambda x: -x[1]):
+            bar = confidence_bar(emo, prob)
+            col.markdown(
+                f"{EMOTION_EMOJI.get(emo,'')} `{emo:<9}` {bar}",
+                unsafe_allow_html=True,
+            )
+        col.divider()
 
 
+# ── Feature 3: Download Results helper ───────────────────────────────────────
+def download_button(predictions, source_name: str):
+    """Render a download button that exports predictions as JSON."""
+    if not predictions:
+        return
+    data = {
+        "source": source_name,
+        "faces": [
+            {
+                "face_index": i + 1,
+                "emotion": p.emotion,
+                "confidence": round(p.confidence, 4),
+                "bbox": list(p.bbox),
+                "all_probabilities": p.all_probs,
+            }
+            for i, p in enumerate(predictions)
+        ],
+    }
+    json_str = json.dumps(data, indent=2)
+    st.download_button(
+        label="⬇️ Download Results (JSON)",
+        data=json_str,
+        file_name="emotion_predictions.json",
+        mime="application/json",
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# IMAGE MODE
+# ════════════════════════════════════════════════════════════════════════════
 if mode == "📷 Upload Image":
     uploaded = st.file_uploader(
         "Upload an image with faces",
@@ -95,24 +204,31 @@ if mode == "📷 Upload Image":
     )
 
     if uploaded:
-        # Decode uploaded bytes into an OpenCV BGR image
         file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
         frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-        # Run face detection + emotion classification
+        t0 = time.perf_counter()
         predictions = predictor.predict_frame(frame)
-        annotated = predictor.annotate_frame(frame, predictions)  # draw boxes + labels
+        elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        # Two-column layout: image on left (2/3 width), results on right (1/3 width)
+        annotated = predictor.annotate_frame(frame, predictions)
+
         col1, col2 = st.columns([2, 1])
         col1.image(
-            cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),  # convert BGR → RGB for Streamlit display
-            caption=f"Detected {len(predictions)} face(s)",
+            cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+            caption=f"Detected {len(predictions)} face(s) — {elapsed_ms:.0f} ms",
             use_container_width=True,
         )
-        display_results(predictions, col2)
+
+        with col2:
+            display_results(predictions, col2)
+            # Feature 3: download button
+            download_button(predictions, uploaded.name)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# VIDEO MODE
+# ════════════════════════════════════════════════════════════════════════════
 elif mode == "🎬 Upload Video":
     uploaded = st.file_uploader(
         "Upload a video file",
@@ -120,41 +236,101 @@ elif mode == "🎬 Upload Video":
     )
 
     if uploaded:
-        # Save uploaded video bytes to a temp file so OpenCV can read it frame-by-frame
         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         tfile.write(uploaded.read())
         tfile.close()
 
-        cap = cv2.VideoCapture(tfile.name)  # open the temp video file
-        stframe = st.empty()      # placeholder to update image in-place each frame
-        results_area = st.empty() # placeholder for results (unused currently)
+        cap = cv2.VideoCapture(tfile.name)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        stframe = st.empty()
+        progress_bar = st.progress(0)
 
         frame_count = 0
-        process_every_n = 3  # skip frames to reduce latency: only process every 3rd frame
+        processed_count = 0
+        process_every_n = 3
+
+        # Feature 1: Emotion Timeline data
+        # Store (timestamp_sec, emotion, confidence) for every processed frame
+        timeline_records = []
+        # Last seen predictions (to annotate skipped frames too)
+        last_predictions = []
 
         while cap.isOpened():
-            ret, frame = cap.read()  # read next frame; ret=False at end of video
+            ret, frame = cap.read()
             if not ret:
                 break
 
             frame_count += 1
+            progress_bar.progress(min(frame_count / max(total_frames, 1), 1.0))
 
-            # Skip most frames for speed — emotion doesn't change drastically between frames
             if frame_count % process_every_n == 0:
-                predictions = predictor.predict_frame(frame)
-                annotated = predictor.annotate_frame(frame, predictions)
-                stframe.image(
-                    cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),  # BGR → RGB for display
-                    use_container_width=True,
+                last_predictions = predictor.predict_frame(frame)
+                processed_count += 1
+
+                # Record emotion at this timestamp for the timeline
+                timestamp = frame_count / fps
+                for pred in last_predictions:
+                    timeline_records.append({
+                        "time_sec": round(timestamp, 2),
+                        "emotion": pred.emotion,
+                        "confidence": round(pred.confidence, 3),
+                    })
+
+            annotated = predictor.annotate_frame(frame, last_predictions)
+            stframe.image(
+                cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                use_container_width=True,
+            )
+
+        cap.release()
+        progress_bar.empty()
+        st.success(f"✅ Processed {processed_count} frames from {frame_count} total")
+
+        # ── Feature 1: Emotion Timeline chart ────────────────────────────────
+        if timeline_records:
+            st.markdown("### 📈 Emotion Timeline")
+            st.markdown("How emotions changed throughout the video (confidence over time):")
+
+            df = pd.DataFrame(timeline_records)
+
+            # Pivot: rows = timestamps, columns = emotions, values = confidence
+            # Fill missing emotions with 0 so the chart shows all 7 lines
+            timeline_pivot = (
+                df.pivot_table(
+                    index="time_sec",
+                    columns="emotion",
+                    values="confidence",
+                    aggfunc="mean",
                 )
+                .reindex(columns=list(EMOTION_EMOJI.keys()), fill_value=0)
+                .fillna(0)
+            )
 
-        cap.release()  # free video file handle
-        st.success("✅ Video processing complete!")
+            # Rename columns to include emoji for the legend
+            timeline_pivot.columns = [
+                f"{EMOTION_EMOJI.get(c, '')} {c}" for c in timeline_pivot.columns
+            ]
 
+            st.line_chart(timeline_pivot, height=300)
 
-# Footer in sidebar with author info
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**Built by [Krishna Singh](https://github.com/krishna8399)**\n\n"
-    "MSc AI @ IU Berlin"
-)
+            # Summary: most common emotion in the video
+            dominant = df.groupby("emotion")["confidence"].mean().idxmax()
+            emoji = EMOTION_EMOJI.get(dominant, "")
+            st.info(f"**Dominant emotion in video:** {emoji} {dominant.upper()}")
+
+            # ── Feature 3: Download full timeline results ─────────────────
+            download_data = {
+                "source": uploaded.name,
+                "total_frames": frame_count,
+                "processed_frames": processed_count,
+                "fps": fps,
+                "timeline": timeline_records,
+            }
+            st.download_button(
+                label="⬇️ Download Timeline (JSON)",
+                data=json.dumps(download_data, indent=2),
+                file_name="emotion_timeline.json",
+                mime="application/json",
+            )
