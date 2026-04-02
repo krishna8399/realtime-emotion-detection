@@ -28,6 +28,7 @@ training:
   class_weighted_loss: true   # Improvement 1: penalise errors on rare classes more
   mixup_alpha: 0.2             # Improvement 2: light mixup (0 = disabled, 0.2 = recommended)
   use_tta: true                # Improvement 3: average 4 augmented views at validation
+  run_lr_finder: true              # run LR finder before training, saves assets/lr_finder.png
   early_stopping:
     patience: 5
     min_delta: 0.001

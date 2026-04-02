@@ -8,8 +8,12 @@ Usage:
 """
 
 import argparse
+import copy
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend — safe for scripts with no display
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -27,6 +31,129 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.data.dataset import create_dataloaders, NUM_CLASSES, EMOTION_LABELS
 from src.models.baseline_cnn import BaselineCNN
 from src.models.efficientnet import EmotionEfficientNet
+
+
+def lr_finder(
+    model: nn.Module,
+    dataloader,
+    criterion: nn.Module,
+    device: torch.device,
+    start_lr: float = 1e-7,
+    end_lr: float = 10.0,
+    num_iter: int = 100,
+    smoothing: float = 0.05,
+    save_path: str = "assets/lr_finder.png",
+) -> float:
+    """
+    Fast.ai-style learning rate finder.
+
+    How it works:
+      1. Save the model's current weights (we restore them after)
+      2. Start with a very small LR and run one mini-batch
+      3. Multiply LR by a constant factor each step (exponential ramp)
+      4. Record the smoothed loss at each LR
+      5. Stop when loss explodes (5x the minimum seen)
+      6. Plot loss vs LR on a log scale
+      7. Return the LR just before the loss starts rising steeply
+         (heuristic: 1/10th of the LR with the steepest negative gradient)
+
+    The optimal LR to use for training is roughly one order of magnitude
+    below the minimum-loss LR — this is the "valley" region where the
+    loss descends fastest without diverging.
+    """
+    print("\nRunning LR Finder...")
+
+    # Save original weights so the finder doesn't pollute the model
+    original_state = copy.deepcopy(model.state_dict())
+
+    # Use SGD with momentum — same as fast.ai's finder; works well across architectures
+    optimizer = torch.optim.SGD(model.parameters(), lr=start_lr, momentum=0.9)
+
+    # Multiplicative factor to increase LR each step
+    # After num_iter steps: start_lr * factor^num_iter = end_lr
+    factor = (end_lr / start_lr) ** (1.0 / num_iter)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=factor)
+
+    lrs, losses = [], []
+    avg_loss = 0.0
+    best_loss = float("inf")
+
+    model.train()
+    data_iter = iter(dataloader)
+
+    for i in tqdm(range(num_iter), desc="LR Finder"):
+        # Wrap around the dataloader if we exhaust it before num_iter steps
+        try:
+            images, labels = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            images, labels = next(data_iter)
+
+        images, labels = images.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        # Exponential moving average smoothing to reduce noise in the loss curve
+        avg_loss = smoothing * loss.item() + (1 - smoothing) * avg_loss
+        # Bias correction for early steps (same trick as Adam)
+        smoothed_loss = avg_loss / (1 - (1 - smoothing) ** (i + 1))
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        lrs.append(current_lr)
+        losses.append(smoothed_loss)
+
+        if smoothed_loss < best_loss:
+            best_loss = smoothed_loss
+
+        # Stop early if loss has exploded (5x the best seen) — no point continuing
+        if smoothed_loss > 5 * best_loss and i > 10:
+            print(f"  Loss diverged at LR={current_lr:.2e} — stopping early")
+            break
+
+        scheduler.step()
+
+    # Restore original weights — the finder is purely diagnostic
+    model.load_state_dict(original_state)
+
+    # --- Find suggested LR ---
+    # Compute gradient of loss w.r.t. LR index; steepest descent = best region
+    losses_arr = np.array(losses)
+    lrs_arr = np.array(lrs)
+    # Gradient of loss: negative = still improving, positive = diverging
+    gradients = np.gradient(losses_arr)
+    # Suggested LR: point of steepest negative gradient, divided by 10 for safety margin
+    steepest_idx = np.argmin(gradients)
+    suggested_lr = lrs_arr[steepest_idx] / 10.0
+
+    # --- Plot ---
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(lrs_arr, losses_arr, color="steelblue", linewidth=1.5, label="Smoothed loss")
+    ax.axvline(
+        suggested_lr, color="red", linestyle="--", linewidth=1.5,
+        label=f"Suggested LR: {suggested_lr:.2e}",
+    )
+    ax.axvline(
+        lrs_arr[steepest_idx], color="orange", linestyle=":", linewidth=1.2,
+        label=f"Min gradient LR: {lrs_arr[steepest_idx]:.2e}",
+    )
+    ax.set_xscale("log")   # log scale makes the exponential ramp linear and easy to read
+    ax.set_xlabel("Learning Rate (log scale)")
+    ax.set_ylabel("Loss (smoothed)")
+    ax.set_title("LR Finder — Loss vs Learning Rate")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print(f"  LR finder plot saved to {save_path}")
+    print(f"  Suggested LR: {suggested_lr:.2e}  (min-gradient LR / 10)")
+    return suggested_lr
 
 
 def load_config(config_path: str) -> dict:
@@ -301,6 +428,20 @@ def train(config_path: str):
         print("Using class-weighted loss")
     else:
         criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    # ---- LR Finder (optional) ----------------------------------------------
+    if config["training"].get("run_lr_finder", False):
+        suggested_lr = lr_finder(
+            model=model,
+            dataloader=train_loader,
+            criterion=criterion,
+            device=device,
+            save_path="assets/lr_finder.png",
+        )
+        # Override config LR with the suggested value and log it
+        print(f"  Overriding config LR {lr:.2e} → suggested {suggested_lr:.2e}")
+        lr = suggested_lr
+        wandb.log({"lr_finder/suggested_lr": suggested_lr})
 
     # ---- Read augmentation/TTA flags from config ---------------------------
     mixup_alpha = config["training"].get("mixup_alpha", 0.0)   # 0 = disabled
