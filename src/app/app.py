@@ -203,8 +203,8 @@ def render_explainability(face_crop: np.ndarray, all_probs: dict, grad_cam: Grad
     gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY) if len(face_crop.shape) == 3 else face_crop
     resized = cv2.resize(gray, (predictor.image_size, predictor.image_size))
     normalized = (resized.astype(np.float32) / 255.0 - 0.5) / 0.5
-    input_tensor = torch.from_numpy(normalized).unsqueeze(0).unsqueeze(0).to(predictor.device)
-    input_tensor.requires_grad_(True)
+    # Base tensor — cloned fresh for each GradCAM call to avoid stale gradient accumulation
+    base_tensor = torch.from_numpy(normalized).unsqueeze(0).unsqueeze(0).to(predictor.device)
 
     top3 = sorted(all_probs.items(), key=lambda x: -x[1])[:3]
     label_to_idx = {v: k for k, v in EMOTION_LABELS.items()}
@@ -212,6 +212,9 @@ def render_explainability(face_crop: np.ndarray, all_probs: dict, grad_cam: Grad
     cols = st.columns(3)
     for col, (emotion, prob) in zip(cols, top3):
         class_idx = label_to_idx[emotion]
+        # Fresh clone with grad enabled for each class — GradCAM backward() accumulates
+        # gradients, so reusing the same tensor gives wrong heatmaps on 2nd/3rd iteration
+        input_tensor = base_tensor.detach().clone().requires_grad_(True)
         heatmap, _ = grad_cam.generate(input_tensor, target_class=class_idx)
         overlay = overlay_heatmap(face_crop, heatmap, alpha=0.45)
         overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
@@ -239,11 +242,7 @@ if mode == "📷 Upload Image":
 
         with st.spinner("Detecting faces…"):
             # Apply current slider confidence threshold
-            predictor.face_detector.detector = \
-                predictor.face_detector.mp_face_detection.FaceDetection(
-                    model_selection=0,
-                    min_detection_confidence=confidence_threshold,
-                )
+            predictor.face_detector._update_confidence(confidence_threshold)
             t0 = time.perf_counter()
             predictions = predictor.predict_frame(frame)
             elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -311,11 +310,7 @@ elif mode == "🎬 Upload Video":
         last_predictions = []
 
         # Apply current slider confidence threshold
-        predictor.face_detector.detector = \
-            predictor.face_detector.mp_face_detection.FaceDetection(
-                model_selection=0,
-                min_detection_confidence=confidence_threshold,
-            )
+        predictor.face_detector._update_confidence(confidence_threshold)
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -380,11 +375,13 @@ elif mode == "🎬 Upload Video":
             ]
             st.line_chart(timeline_pivot, height=300)
 
-            dominant = df.groupby("emotion")["confidence"].mean().idxmax()
-            st.info(
-                f"**Dominant emotion in video:** "
-                f"{EMOTION_EMOJI.get(dominant, '')} {dominant.upper()}"
-            )
+            emotion_means = df.groupby("emotion")["confidence"].mean()
+            if not emotion_means.empty:
+                dominant = emotion_means.idxmax()
+                st.info(
+                    f"**Dominant emotion in video:** "
+                    f"{EMOTION_EMOJI.get(dominant, '')} {dominant.upper()}"
+                )
 
             download_data = {
                 "source": uploaded.name,

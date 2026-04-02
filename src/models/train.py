@@ -500,13 +500,18 @@ def train(config_path: str) -> None:
 
         if epoch == freeze_epochs + 1 and hasattr(model, "unfreeze_backbone"):
             model.unfreeze_backbone()
-            optimizer = AdamW(
-                [
-                    {"params": model.backbone.parameters(), "lr": lr * 0.1},
-                    {"params": model.classifier.parameters(), "lr": lr},
-                ],
-                weight_decay=wd,
-            )
+            # Use differential LR only when backbone exists (EfficientNet);
+            # BaselineCNN has no separate backbone so treat all params uniformly
+            if hasattr(model, "backbone"):
+                optimizer = AdamW(
+                    [
+                        {"params": model.backbone.parameters(), "lr": lr * 0.1},
+                        {"params": model.classifier.parameters(), "lr": lr},
+                    ],
+                    weight_decay=wd,
+                )
+            else:
+                optimizer = AdamW(model.parameters(), lr=lr, weight_decay=wd)
 
         train_metrics = train_one_epoch(
             model, train_loader, criterion, optimizer, device,
