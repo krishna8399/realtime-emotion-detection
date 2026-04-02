@@ -1,0 +1,38 @@
+# EfficientNet-B0 v2 — with class-weighted loss, Mixup, and TTA
+#
+# Motivation from confusion matrix analysis:
+#   - disgust (436 train samples) badly confused with angry → class weights fix this
+#   - fear confused with sad/neutral/angry → mixup smooths decision boundaries
+#   - TTA gives free accuracy boost at inference time via prediction averaging
+
+model:
+  name: "efficientnet_b0"
+  num_classes: 7
+  pretrained: true
+  freeze_backbone_epochs: 3
+
+data:
+  dataset: "fer2013"
+  data_dir: "data/fer2013"
+  image_size: 224
+  batch_size: 32
+  num_workers: 0
+
+training:
+  epochs: 20
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  label_smoothing: 0.1
+  class_weighted_loss: true   # Improvement 1: penalise errors on rare classes more
+  mixup_alpha: 0.2             # Improvement 2: light mixup (0 = disabled, 0.2 = recommended)
+  use_tta: true                # Improvement 3: average 4 augmented views at validation
+  early_stopping:
+    patience: 5
+    min_delta: 0.001
+
+wandb:
+  project: "emotion-detection"
+  name: "efficientnet-b0-v2"
+  tags: ["efficientnet", "class-weights", "mixup", "tta", "fer2013"]
