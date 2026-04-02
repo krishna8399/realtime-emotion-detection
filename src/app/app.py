@@ -85,30 +85,28 @@ confidence_threshold = st.sidebar.slider("Face Detection Confidence", 0.3, 1.0, 
 st.sidebar.markdown("---")
 st.sidebar.header("🧠 Model Info")
 
-# Count parameters from the loaded model
-total_params = sum(p.numel() for p in predictor.model.parameters())
-trainable_params = sum(p.numel() for p in predictor.model.parameters() if p.requires_grad)
 
-# Measure inference speed: run 10 dummy forward passes and average
-dummy = torch.randn(1, 1, predictor.image_size, predictor.image_size).to(predictor.device)
-timings = []
-with torch.no_grad():
-    for _ in range(10):
+@st.cache_data
+def get_model_stats(_predictor):
+    """Compute model stats once and cache — avoids re-running on every Streamlit rerun."""
+    total_params = sum(p.numel() for p in _predictor.model.parameters())
+
+    # Single warmup pass then one timed pass — enough for a ballpark ms figure
+    dummy = torch.randn(1, 1, _predictor.image_size, _predictor.image_size).to(_predictor.device)
+    with torch.no_grad():
+        _predictor.model(dummy)  # warmup
         t0 = time.perf_counter()
-        predictor.model(dummy)
-        timings.append((time.perf_counter() - t0) * 1000)
-avg_ms = sum(timings[2:]) / len(timings[2:])  # skip first 2 (warmup)
+        _predictor.model(dummy)
+        avg_ms = (time.perf_counter() - t0) * 1000
 
-# Detect which checkpoint is loaded from the model's config
-ckpt_dir = Path("models/checkpoints")
-ckpt_path = (
-    ckpt_dir / "best_efficientnet_b0.pt"
-    if (ckpt_dir / "best_efficientnet_b0.pt").exists()
-    else ckpt_dir / "best_baseline_cnn.pt"
-)
-ckpt = torch.load(str(ckpt_path), map_location="cpu")
-model_name = ckpt["config"]["model"]["name"]
-best_val_acc = ckpt.get("val_acc", "N/A")
+    # Read metadata from the predictor's already-loaded config instead of re-loading the file
+    model_name = _predictor.config["model"]["name"]
+    best_val_acc = _predictor.val_acc
+
+    return total_params, avg_ms, model_name, best_val_acc
+
+
+total_params, avg_ms, model_name, best_val_acc = get_model_stats(predictor)
 
 st.sidebar.markdown(f"""
 | | |
@@ -204,7 +202,7 @@ def get_gradcam(_predictor: EmotionPredictor) -> GradCAM:
     """Build a GradCAM instance attached to the correct target layer.
     Cached so hooks are only registered once."""
     model = _predictor.model
-    model_name = ckpt["config"]["model"]["name"]
+    model_name = _predictor.config["model"]["name"]
     if model_name == "efficientnet_b0":
         target_layer = model.backbone.conv_head  # last conv before global pool
     else:

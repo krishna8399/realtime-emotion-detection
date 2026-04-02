@@ -70,6 +70,10 @@ class EmotionPredictor:
         self.model.to(self.device)
         self.model.eval()  # disable dropout for inference
 
+        # Store config and val_acc so the app can read them without re-loading the file
+        self.config = config
+        self.val_acc = checkpoint.get("val_acc", 0.0)
+
         # Initialize face detector with given confidence threshold
         self.face_detector = FaceDetector(min_confidence=face_confidence)
 
