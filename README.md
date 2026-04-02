@@ -4,7 +4,10 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.8+-green.svg)](https://opencv.org)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://docker.com)
+[![HuggingFace](https://img.shields.io/badge/🤗%20Spaces-Live%20Demo-yellow.svg)](https://krishna089-realtime-emotion-detection.hf.space)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+> **[Live Demo →](https://krishna089-realtime-emotion-detection.hf.space)** — Upload a photo or video and get instant emotion predictions. No signup required.
 
 ![Demo](assets/demo.gif)
 
@@ -76,6 +79,19 @@ The app includes live Grad-CAM heatmaps (accessible via the **Explainability** t
 ![LR Finder](assets/lr_finder.png)
 
 The fast.ai-style LR finder identified **lr ≈ 3×10⁻⁴** as the optimal learning rate (steepest loss descent before divergence). This was used directly in the final EfficientNet-B0 v2 training run.
+
+---
+
+## Try It Live
+
+**No installation needed** — the app is deployed on HuggingFace Spaces:
+
+**https://krishna089-realtime-emotion-detection.hf.space**
+
+- Upload any photo with faces → get per-face emotion labels + confidence bars
+- Upload a short video → see emotion timeline chart over time
+- Switch to the **Grad-CAM** tab to visualise what the model focuses on
+- Download all predictions as JSON
 
 ---
 
