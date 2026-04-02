@@ -44,3 +44,16 @@ wandb/
 # Misc
 *.log
 tmp/
+
+# Generated demo source video (keep outputs demo_output.mp4 / demo.gif)
+assets/sample*
+
+# Streamlit local config and secrets
+.streamlit/secrets.toml
+
+# Local environment overrides
+.env.local
+config.local.yaml
+
+# Claude Code session files
+.claude/

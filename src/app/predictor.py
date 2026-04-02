@@ -143,7 +143,13 @@ class EmotionPredictor:
         frame: np.ndarray,
         predictions: List[EmotionPrediction],
     ) -> np.ndarray:
-        """Draw bounding boxes and emotion labels on frame."""
+        """
+        Draw emotion bounding boxes and labels onto a copy of the frame.
+
+        Each face gets a colored rectangle (color varies by emotion) and a filled
+        label background showing the emotion name and confidence percentage.
+        The original frame is not modified.
+        """
         annotated = frame.copy()  # don't modify the original frame
 
         # Distinct BGR color for each emotion to make annotations easy to distinguish
@@ -152,7 +158,7 @@ class EmotionPredictor:
             "disgust": (0, 128, 0),     # dark green
             "fear": (128, 0, 128),      # purple
             "happy": (0, 255, 255),     # yellow
-            "neutral": (200, 200, 200), # light grey
+            "neutral": (200, 200, 200),  # light grey
             "sad": (255, 0, 0),         # blue
             "surprise": (0, 255, 0),    # bright green
         }

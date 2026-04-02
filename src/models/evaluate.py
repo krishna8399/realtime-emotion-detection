@@ -28,9 +28,11 @@ from src.data.dataset import (
 )
 from src.models.baseline_cnn import BaselineCNN
 from src.models.efficientnet import EmotionEfficientNet
+from typing import Tuple
 
 
-def load_model(checkpoint_path: str, device: torch.device):
+def load_model(checkpoint_path: str, device: torch.device) -> Tuple[torch.nn.Module, dict]:
+    """Load a checkpoint and reconstruct the model architecture. Returns (model, config)."""
     checkpoint = torch.load(checkpoint_path, map_location=device)  # load saved state dict + config
     config = checkpoint["config"]  # retrieve training config embedded in the checkpoint
 
@@ -52,7 +54,12 @@ def load_model(checkpoint_path: str, device: torch.device):
     return model, config
 
 
-def plot_confusion_matrix(y_true, y_pred, save_path: str = "assets/confusion_matrix.png"):
+def plot_confusion_matrix(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    save_path: str = "assets/confusion_matrix.png",
+) -> None:
+    """Plot and save a side-by-side raw + normalized confusion matrix."""
     labels = [EMOTION_LABELS[i] for i in range(len(EMOTION_LABELS))]  # ordered label names
     cm = confusion_matrix(y_true, y_pred)  # raw count matrix: cm[i,j] = predicted j when true is i
     cm_normalized = cm.astype("float") / cm.sum(axis=1, keepdims=True)  # normalize each row to sum to 1
@@ -84,7 +91,8 @@ def plot_confusion_matrix(y_true, y_pred, save_path: str = "assets/confusion_mat
     plt.close()
 
 
-def evaluate(checkpoint_path: str):
+def evaluate(checkpoint_path: str) -> None:
+    """Run evaluation on the FER-2013 test split and print per-class metrics."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, config = load_model(checkpoint_path, device)
 
@@ -99,7 +107,7 @@ def evaluate(checkpoint_path: str):
     )
 
     loader = torch.utils.data.DataLoader(
-        dataset, batch_size=64, shuffle=False, num_workers=4,
+        dataset, batch_size=64, shuffle=False, num_workers=0,
     )
 
     all_preds = []

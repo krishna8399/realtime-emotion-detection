@@ -16,7 +16,6 @@ import pandas as pd
 import streamlit as st
 
 import torch
-import torch.nn.functional as F
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -60,6 +59,7 @@ st.markdown(
     "trained on FER-2013 (68.57% val accuracy). Upload an image or video to get started."
 )
 
+
 # ── Model loader ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_predictor():
@@ -90,7 +90,6 @@ total_params = sum(p.numel() for p in predictor.model.parameters())
 trainable_params = sum(p.numel() for p in predictor.model.parameters() if p.requires_grad)
 
 # Measure inference speed: run 10 dummy forward passes and average
-import torch
 dummy = torch.randn(1, 1, predictor.image_size, predictor.image_size).to(predictor.device)
 timings = []
 with torch.no_grad():
@@ -130,7 +129,7 @@ st.sidebar.markdown(
 
 # ── Helper: color-coded confidence bar ───────────────────────────────────────
 def confidence_bar(emotion: str, confidence: float) -> str:
-    """Render an HTML progress bar colored by emotion."""
+    """Return an HTML progress bar string colored by emotion, showing confidence as a percentage."""
     color = EMOTION_COLOR.get(emotion, "#888")
     pct = int(confidence * 100)
     return (
@@ -143,7 +142,8 @@ def confidence_bar(emotion: str, confidence: float) -> str:
 
 
 # ── Helper: display per-face results ─────────────────────────────────────────
-def display_results(predictions, col):
+def display_results(predictions: list, col) -> None:
+    """Render per-face emotion results (label, confidence bar, full breakdown) into a Streamlit column."""
     if not predictions:
         col.warning("No faces detected.")
         return
@@ -172,8 +172,8 @@ def display_results(predictions, col):
 
 
 # ── Feature 3: Download Results helper ───────────────────────────────────────
-def download_button(predictions, source_name: str):
-    """Render a download button that exports predictions as JSON."""
+def download_button(predictions: list, source_name: str) -> None:
+    """Render a Streamlit download button that exports per-face predictions as a JSON file."""
     if not predictions:
         return
     data = {
@@ -212,8 +212,13 @@ def get_gradcam(_predictor: EmotionPredictor) -> GradCAM:
     return GradCAM(model, target_layer)
 
 
-def render_explainability(face_crop: np.ndarray, all_probs: dict, grad_cam: GradCAM):
-    """Show Grad-CAM heatmap overlays for the top 3 predicted emotions."""
+def render_explainability(face_crop: np.ndarray, all_probs: dict, grad_cam: GradCAM) -> None:
+    """
+    Render Grad-CAM heatmap overlays for the top 3 predicted emotions in a 3-column layout.
+
+    Each column shows the heatmap blended onto the face crop for one emotion class,
+    labelled with the emotion name and its predicted probability.
+    """
     # Preprocess the face crop into a model tensor (same pipeline as predictor)
     gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY) if len(face_crop.shape) == 3 else face_crop
     resized = cv2.resize(gray, (predictor.image_size, predictor.image_size))

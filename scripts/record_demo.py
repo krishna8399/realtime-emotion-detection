@@ -47,7 +47,7 @@ EMOTION_COLORS = {
 
 
 def find_input_video(assets_dir: Path) -> Path:
-    """Return the first video file found in assets/, or raise if none exists."""
+    """Return the first video file (mp4/avi/mov/mkv/webm) found in assets_dir, sorted by name."""
     video_exts = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
     for path in sorted(assets_dir.iterdir()):
         if path.suffix.lower() in video_exts:
@@ -59,7 +59,7 @@ def find_input_video(assets_dir: Path) -> Path:
 
 
 def find_checkpoint(ckpt_dir: Path) -> Path:
-    """Prefer EfficientNet checkpoint; fall back to baseline CNN."""
+    """Return the best available checkpoint path, preferring EfficientNet over baseline CNN."""
     for name in ("best_efficientnet_b0.pt", "best_baseline_cnn.pt"):
         path = ckpt_dir / name
         if path.exists():
@@ -71,7 +71,7 @@ def find_checkpoint(ckpt_dir: Path) -> Path:
 
 
 def resize_frame(frame: np.ndarray, max_width: int) -> np.ndarray:
-    """Downscale frame so its width does not exceed max_width (preserves aspect ratio)."""
+    """Return frame downscaled so width ≤ max_width, preserving aspect ratio. No-op if already smaller."""
     h, w = frame.shape[:2]
     if w <= max_width:
         return frame
@@ -111,7 +111,7 @@ def draw_overlay(frame: np.ndarray, predictions, elapsed_ms: float) -> np.ndarra
 
 
 def frames_to_gif(frames_rgb: list, output_path: Path, fps: int) -> None:
-    """Save a list of RGB numpy arrays as an animated GIF using Pillow."""
+    """Encode a list of RGB numpy arrays as a looping animated GIF at the given frame rate."""
     duration_ms = int(1000 / fps)  # milliseconds per frame
     pil_frames = [Image.fromarray(f) for f in frames_rgb]
     pil_frames[0].save(
@@ -125,6 +125,7 @@ def frames_to_gif(frames_rgb: list, output_path: Path, fps: int) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse and return command-line arguments."""
     p = argparse.ArgumentParser(description="Record annotated demo video and GIF.")
     p.add_argument("--input",     type=str, default=None,
                    help="Path to input video (default: first video in assets/)")
@@ -145,6 +146,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Entry point: parse args, run pipeline, save MP4 and GIF."""
     args = parse_args()
 
     root = Path(__file__).parent.parent  # project root
@@ -153,7 +155,7 @@ def main() -> None:
     input_path = Path(args.input) if args.input else find_input_video(root / "assets")
     output_mp4 = root / args.output_mp4
     output_gif = root / args.output_gif
-    ckpt_path  = find_checkpoint(root / "models" / "checkpoints")
+    ckpt_path = find_checkpoint(root / "models" / "checkpoints")
 
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
 
@@ -172,7 +174,7 @@ def main() -> None:
         raise RuntimeError(f"Cannot open video: {input_path}")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    source_fps   = cap.get(cv2.CAP_PROP_FPS) or 30
+    source_fps = cap.get(cv2.CAP_PROP_FPS) or 30
     print(f"Source : {total_frames} frames @ {source_fps:.1f} fps")
 
     # ── Determine output dimensions from the first frame ─────────────────────
@@ -180,7 +182,7 @@ def main() -> None:
     if not ret:
         raise RuntimeError("Could not read first frame from video.")
     first_resized = resize_frame(first_frame, args.max_width)
-    out_h, out_w  = first_resized.shape[:2]
+    out_h, out_w = first_resized.shape[:2]
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # rewind to start
 
     # ── Set up MP4 writer ─────────────────────────────────────────────────────
@@ -191,7 +193,7 @@ def main() -> None:
     gif_frames_rgb = []    # collect resized RGB frames for GIF
     last_predictions = []  # re-use predictions on skipped frames
     frame_idx = 0
-    written   = 0
+    written = 0
 
     # Calculate how many input frames map to one output frame
     # (down-sample from source_fps to args.fps)

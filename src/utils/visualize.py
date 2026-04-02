@@ -5,12 +5,14 @@ Shows what regions of the face the model focuses on
 when making predictions — great for explainability.
 
 Usage:
-    python src/utils/visualize.py --checkpoint models/checkpoints/best_efficientnet_b0.pt --image path/to/face.jpg
+    python src/utils/visualize.py \
+        --checkpoint models/checkpoints/best_efficientnet_b0.pt \
+        --image path/to/face.jpg
 """
 
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import matplotlib.pyplot as plt
@@ -44,17 +46,19 @@ class GradCAM:
         target_layer.register_forward_hook(self._save_activation)        # captures feature maps
         target_layer.register_full_backward_hook(self._save_gradient)    # captures gradients
 
-    def _save_activation(self, module, input, output):
+    def _save_activation(self, module, input, output) -> None:
+        """Forward hook: cache the layer's output feature maps."""
         self.activations = output.detach()  # save feature maps from the target layer
 
-    def _save_gradient(self, module, grad_input, grad_output):
+    def _save_gradient(self, module, grad_input, grad_output) -> None:
+        """Backward hook: cache gradients flowing through the target layer."""
         self.gradients = grad_output[0].detach()  # save gradients flowing back through target layer
 
     def generate(
         self,
         input_tensor: torch.Tensor,
         target_class: Optional[int] = None,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, int]:
         """
         Generate Grad-CAM heatmap.
 
@@ -96,7 +100,17 @@ def overlay_heatmap(
     heatmap: np.ndarray,
     alpha: float = 0.5,
 ) -> np.ndarray:
-    """Overlay Grad-CAM heatmap on original image."""
+    """
+    Overlay a Grad-CAM heatmap on an image using the JET colormap.
+
+    Args:
+        image:   BGR or grayscale image (H, W, 3) or (H, W)
+        heatmap: Float array in [0, 1] of any spatial size — resized to match image
+        alpha:   Blend factor for the heatmap (0 = original only, 1 = heatmap only)
+
+    Returns:
+        BGR image with heatmap blended in
+    """
     # Scale heatmap back up to original image size
     heatmap_resized = cv2.resize(heatmap, (image.shape[1], image.shape[0]))
 
@@ -119,8 +133,12 @@ def visualize_gradcam(
     checkpoint_path: str,
     image_path: str,
     save_path: str = "assets/gradcam.png",
-):
-    """Generate and save Grad-CAM visualization."""
+) -> None:
+    """
+    Generate and save a 3-panel Grad-CAM visualization for a single image.
+
+    Panels: original face | raw heatmap | heatmap overlaid on face
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load checkpoint and reconstruct model

@@ -157,11 +157,13 @@ def lr_finder(
 
 
 def load_config(config_path: str) -> dict:
+    """Load and return a YAML config file as a dictionary."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
 def create_model(config: dict) -> nn.Module:
+    """Instantiate the model architecture specified in config["model"]["name"]."""
     model_name = config["model"]["name"]
     num_classes = config["model"].get("num_classes", NUM_CLASSES)
 
@@ -213,7 +215,11 @@ def compute_class_weights(data_dir: str, device: torch.device) -> torch.Tensor:
 # Improvement 2: Mixup augmentation
 # ---------------------------------------------------------------------------
 
-def mixup_data(images: torch.Tensor, labels: torch.Tensor, alpha: float):
+def mixup_data(
+    images: torch.Tensor,
+    labels: torch.Tensor,
+    alpha: float,
+) -> tuple:
     """
     Mixup: blend two random samples from the same batch.
 
@@ -240,7 +246,13 @@ def mixup_data(images: torch.Tensor, labels: torch.Tensor, alpha: float):
     return mixed_images, labels_a, labels_b, lam
 
 
-def mixup_criterion(criterion, outputs, labels_a, labels_b, lam):
+def mixup_criterion(
+    criterion: nn.Module,
+    outputs: torch.Tensor,
+    labels_a: torch.Tensor,
+    labels_b: torch.Tensor,
+    lam: float,
+) -> torch.Tensor:
     """Compute mixed loss: weighted sum of loss for both sets of labels."""
     return lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
 
@@ -289,12 +301,13 @@ def tta_predict(model: nn.Module, images: torch.Tensor) -> torch.Tensor:
 
 def train_one_epoch(
     model: nn.Module,
-    dataloader,
+    dataloader: torch.utils.data.DataLoader,
     criterion: nn.Module,
-    optimizer,
+    optimizer: torch.optim.Optimizer,
     device: torch.device,
     mixup_alpha: float = 0.0,  # 0.0 = disabled; > 0 enables mixup
 ) -> dict:
+    """Run one full pass over the training set. Returns loss and accuracy metrics."""
     model.train()
     running_loss = 0.0
     correct = 0
@@ -341,11 +354,12 @@ def train_one_epoch(
 @torch.no_grad()
 def validate(
     model: nn.Module,
-    dataloader,
+    dataloader: torch.utils.data.DataLoader,
     criterion: nn.Module,
     device: torch.device,
     use_tta: bool = False,  # toggle TTA on/off
 ) -> dict:
+    """Evaluate model on a dataloader. Returns loss, accuracy, and raw predictions."""
     model.eval()
     running_loss = 0.0
     correct = 0
@@ -387,7 +401,11 @@ def validate(
 # Main train function
 # ---------------------------------------------------------------------------
 
-def train(config_path: str):
+def train(config_path: str) -> None:
+    """
+    Full training pipeline: load config, build model/dataloaders, run training loop,
+    save the best checkpoint, and log everything to W&B.
+    """
     config = load_config(config_path)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -429,7 +447,20 @@ def train(config_path: str):
     else:
         criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
-    # ---- LR Finder (optional) ----------------------------------------------
+    # ---- Read augmentation/TTA flags from config ---------------------------
+    mixup_alpha = config["training"].get("mixup_alpha", 0.0)   # 0 = disabled
+    use_tta = config["training"].get("use_tta", False)
+    if mixup_alpha > 0:
+        print(f"Mixup enabled (alpha={mixup_alpha})")
+    if use_tta:
+        print("TTA enabled for validation")
+
+    # ---- Optimizer ---------------------------------------------------------
+    lr = config["training"]["learning_rate"]
+    wd = config["training"]["weight_decay"]
+
+    # ---- LR Finder (optional) — runs before optimizer is built so suggested
+    #      LR can be passed directly to the optimizer constructor -------------
     if config["training"].get("run_lr_finder", False):
         suggested_lr = lr_finder(
             model=model,
@@ -442,18 +473,6 @@ def train(config_path: str):
         print(f"  Overriding config LR {lr:.2e} → suggested {suggested_lr:.2e}")
         lr = suggested_lr
         wandb.log({"lr_finder/suggested_lr": suggested_lr})
-
-    # ---- Read augmentation/TTA flags from config ---------------------------
-    mixup_alpha = config["training"].get("mixup_alpha", 0.0)   # 0 = disabled
-    use_tta = config["training"].get("use_tta", False)
-    if mixup_alpha > 0:
-        print(f"Mixup enabled (alpha={mixup_alpha})")
-    if use_tta:
-        print("TTA enabled for validation")
-
-    # ---- Optimizer ---------------------------------------------------------
-    lr = config["training"]["learning_rate"]
-    wd = config["training"]["weight_decay"]
     opt_name = config["training"]["optimizer"]
 
     if opt_name == "adamw":
@@ -510,8 +529,14 @@ def train(config_path: str):
             "lr": optimizer.param_groups[0]["lr"],
         })
 
-        print(f"  Train Loss: {train_metrics['train_loss']:.4f} | Train Acc: {train_metrics['train_acc']:.2f}%")
-        print(f"  Val   Loss: {val_metrics['val_loss']:.4f} | Val   Acc: {val_metrics['val_acc']:.2f}%")
+        print(
+            f"  Train Loss: {train_metrics['train_loss']:.4f} | "
+            f"Train Acc: {train_metrics['train_acc']:.2f}%"
+        )
+        print(
+            f"  Val   Loss: {val_metrics['val_loss']:.4f} | "
+            f"Val   Acc: {val_metrics['val_acc']:.2f}%"
+        )
 
         if val_metrics["val_acc"] > best_val_acc:
             best_val_acc = val_metrics["val_acc"]
