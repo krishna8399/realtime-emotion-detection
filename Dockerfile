@@ -12,12 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-# Copies requirements first so Docker can cache this layer — only re-runs if requirements change
-COPY requirements.txt .
+# Install Python dependencies (headless deps, no wandb/kaggle/pytest)
+COPY space_requirements.txt requirements.txt
 
-# Pin mediapipe to a version compatible with Python 3.10 in this container
-# Override the open-ended >=0.10.0 spec with an exact working version
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir "mediapipe==0.10.9"
 
