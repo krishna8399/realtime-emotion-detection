@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python src/models/train.py --config configs/efficientnet_v2.yaml)"
-    ]
-  }
-}
