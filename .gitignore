@@ -53,5 +53,5 @@ assets/sample*
 .env.local
 config.local.yaml
 
-# Claude Code session files
+# Local session files
 .claude/
